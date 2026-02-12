@@ -6,6 +6,7 @@ import sumolib
 import numpy as np
 import heapq
 import math
+import json
 from shapely.geometry import Polygon, Point, LineString
 
 # --- Configuration ---
@@ -16,15 +17,24 @@ TRIPS_FILE = "trips.xml"
 ROUTE_FILE = "routes.xml"
 EDGE_DATA_FILE = "edge_data.xml"
 
-GRID_RES = 5.0  # 5 meters per cell
+# Load config from file if it exists (written by Flask backend)
+_config = {}
+_config_path = os.path.join(os.getcwd(), "road_gen_config.json")
+if os.path.exists(_config_path):
+    with open(_config_path, 'r') as _cf:
+        _config = json.load(_cf)
+    print(f"Loaded config from {_config_path}: {_config}")
+
+GRID_RES = float(_config.get("GRID_RES", 5.0))  # 5 meters per cell
 
 # PENALTY CONFIGURATION
-COST_OBSTACLE = 9999    # Buildings/Water
-COST_EXISTING_ROAD = 60 # Don't overlap with other roads
-COST_CONGESTION_CORE = 200 # The red zone (forbidden)
-COST_CONGESTION_NEAR = 40  # Close to red zone (high drag)
-COST_CONGESTION_FAR = 5    # Influence zone (slight drag)
-COST_EMPTY = 1          # Green field (cheapest)
+COST_OBSTACLE = int(_config.get("COST_OBSTACLE", 9999))    # Buildings/Water
+COST_EXISTING_ROAD = int(_config.get("COST_EXISTING_ROAD", 60)) # Don't overlap with other roads
+COST_CONGESTION_CORE = int(_config.get("COST_CONGESTION_CORE", 200)) # The red zone (forbidden)
+COST_CONGESTION_NEAR = int(_config.get("COST_CONGESTION_NEAR", 40))  # Close to red zone (high drag)
+COST_CONGESTION_FAR = int(_config.get("COST_CONGESTION_FAR", 5))    # Influence zone (slight drag)
+COST_EMPTY = int(_config.get("COST_EMPTY", 1))          # Green field (cheapest)
+
 
 def check_sumo_env():
     if 'SUMO_HOME' not in os.environ:
