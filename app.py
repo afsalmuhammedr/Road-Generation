@@ -284,4 +284,4 @@ if __name__ == '__main__':
     print(f"  Projects dir: {PROJECTS_DIR}")
     print(f"  SUMO_HOME: {os.environ.get('SUMO_HOME', 'NOT SET')}")
     print("=" * 60)
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=6000)
