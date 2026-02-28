@@ -19,29 +19,102 @@ os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 
 def download_osm(north, south, east, west, output_path):
-    """Download OSM data for the given bounding box using Overpass API directly."""
+    """Download OSM data for the given bounding box using Overpass API with fallbacks."""
     import requests
+    import time
     
     print(f"  [1/4] Fetching OSM data: N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}")
     
-    # Use Overpass API to download raw OSM XML — much faster than osmnx
-    overpass_url = "https://overpass-api.de/api/map"
-    params = {
-        "bbox": f"{west},{south},{east},{north}"  # Overpass uses W,S,E,N order
-    }
+    bbox_str = f"{south},{west},{north},{east}"  # Overpass QL uses S,W,N,E
+    bbox_map = f"{west},{south},{east},{north}"  # /api/map uses W,S,E,N
     
-    print(f"  [1/4] Downloading from Overpass API...")
-    response = requests.get(overpass_url, params=params, timeout=120)
+    # Overpass QL query: get all data in the bounding box (roads, buildings, etc.)
+    overpass_query = f"""
+    [out:xml][timeout:90];
+    (
+      way["highway"]({bbox_str});
+      way["building"]({bbox_str});
+      way["landuse"]({bbox_str});
+      way["natural"]({bbox_str});
+      way["waterway"]({bbox_str});
+      relation["boundary"]({bbox_str});
+    );
+    (._;>;);
+    out body;
+    """
     
-    if response.status_code != 200:
-        raise Exception(f"Overpass API returned status {response.status_code}: {response.text[:200]}")
+    # List of Overpass API endpoints to try (primary + mirrors)
+    overpass_endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ]
     
-    with open(output_path, 'wb') as f:
-        f.write(response.content)
+    # Strategy 1: Try Overpass QL interpreter (fetches only relevant data, much faster)
+    for i, endpoint in enumerate(overpass_endpoints):
+        try:
+            print(f"  [1/4] Trying Overpass QL endpoint ({i+1}/{len(overpass_endpoints)}): {endpoint.split('/')[2]}...")
+            response = requests.post(
+                endpoint,
+                data={"data": overpass_query},
+                timeout=90,
+                headers={"User-Agent": "RoadGenTool/1.0"}
+            )
+            
+            if response.status_code == 200 and len(response.content) > 100:
+                with open(output_path, 'wb') as f:
+                    f.write(response.content)
+                size_kb = len(response.content) / 1024
+                print(f"  [1/4] OSM data saved ({size_kb:.1f} KB) via Overpass QL")
+                return True
+            else:
+                print(f"  [1/4] Endpoint returned status {response.status_code} (body: {len(response.content)} bytes), trying next...")
+                
+        except requests.exceptions.Timeout:
+            print(f"  [1/4] Endpoint timed out, trying next...")
+        except requests.exceptions.ConnectionError:
+            print(f"  [1/4] Connection error, trying next...")
+        except Exception as e:
+            print(f"  [1/4] Error: {e}, trying next...")
+        
+        time.sleep(1)  # Brief pause before trying next endpoint
     
-    size_kb = len(response.content) / 1024
-    print(f"  [1/4] OSM data saved ({size_kb:.1f} KB)")
-    return True
+    # Strategy 2: Fall back to /api/map endpoint (downloads ALL data, larger but simpler)
+    map_endpoints = [
+        "https://overpass-api.de/api/map",
+        "https://overpass.kumi.systems/api/map",
+    ]
+    
+    for i, endpoint in enumerate(map_endpoints):
+        try:
+            print(f"  [1/4] Fallback: trying /api/map endpoint ({i+1}/{len(map_endpoints)})...")
+            response = requests.get(
+                endpoint,
+                params={"bbox": bbox_map},
+                timeout=90,
+                headers={"User-Agent": "RoadGenTool/1.0"}
+            )
+            
+            if response.status_code == 200 and len(response.content) > 100:
+                with open(output_path, 'wb') as f:
+                    f.write(response.content)
+                size_kb = len(response.content) / 1024
+                print(f"  [1/4] OSM data saved ({size_kb:.1f} KB) via /api/map fallback")
+                return True
+            else:
+                print(f"  [1/4] Fallback returned status {response.status_code}, trying next...")
+                
+        except requests.exceptions.Timeout:
+            print(f"  [1/4] Fallback timed out, trying next...")
+        except Exception as e:
+            print(f"  [1/4] Fallback error: {e}, trying next...")
+        
+        time.sleep(1)
+    
+    raise Exception(
+        "Failed to download OSM data from all Overpass API endpoints. "
+        "The servers may be overloaded. Please try again in a few minutes."
+    )
 
 
 
