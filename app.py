@@ -151,6 +151,13 @@ def write_road_gen_config(area_path, params):
         "COST_CONGESTION_NEAR": params.get("costCongestionNear", 40),
         "COST_CONGESTION_FAR": params.get("costCongestionFar", 5),
         "COST_EMPTY": params.get("costEmpty", 1),
+        
+        # RL + GA Parameters
+        "RL_EPISODES": params.get("rlEpisodes", 1500),
+        "RL_DOWNSAMPLE": params.get("rlDownsample", 3),
+        "GA_POPULATION": params.get("gaPopulation", 80),
+        "GA_GENERATIONS": params.get("gaGenerations", 100),
+        "GA_WAYPOINTS": params.get("gaWaypoints", 10),
     }
     config_path = os.path.join(area_path, "road_gen_config.json")
     with open(config_path, 'w') as f:
@@ -357,4 +364,4 @@ if __name__ == '__main__':
     print(f"  Projects dir: {PROJECTS_DIR}")
     print(f"  SUMO_HOME: {os.environ.get('SUMO_HOME', 'NOT SET')}")
     print("=" * 60)
-    app.run(debug=True, port=5050)
+    app.run(debug=True, port=6000)

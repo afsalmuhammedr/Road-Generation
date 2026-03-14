@@ -1,4 +1,4 @@
-# Project Presentation: AI-Driven Road Generation & Traffic Signal Optimization
+# Project Presentation: AI-Driven Road Generation & Traffic Optimization
 
 ## 1. Project Overview
 **Title:** Automated Urban Congestion Relief using AI
@@ -9,8 +9,9 @@
 *   **Map Data**: OpenStreetMap (OSM) for real-world road networks.
 *   **Languages**: Python 3.10+
 *   **Algorithms**:
-    1.  **A* Search Algorithm**: For optimal road path planning.
-    2.  **Genetic Algorithm (GA)**: For optimizing traffic signal phases.
+    1.  **Reinforcement Learning (Q-Learning)**: For exploring feasible bypass routes on traffic grids.
+    2.  **Genetic Algorithm (GA)**: For evolving and optimizing road paths and traffic signal phases.
+    3.  **Hybrid RL + GA Pipeline**: A two-phase approach where RL discovers initial routes and GA refines them.
 
 ---
 
@@ -28,25 +29,41 @@ The project consists of three main modules that work sequentially to analyze and
 *   `get_feature_style(tags)`: Classifies features (e.g., 'building' = Grey, 'water' = Blue) to create a visual map (`.poly.xml`) used for obstacle avoidance.
 *   `transform_and_write_poly(...)`: Converts geographic coordinates (Lat/Lon) to SUMO's Cartesian (X/Y) coordinate system.
 
-### Module 2: Traffic Analysis & Road Proposal
-**File:** `traffic_optimizer.py`
-**Purpose:** Runs the traffic simulation, identifies the "worst" road, and plans a new bypass road avoiding physical obstacles.
+### Module 2: Traffic Analysis & Hybrid Bypass Planning
+**Files:** `road-gen.py`, `rl_environment.py`, `ga_optimizer.py`, `hybrid_optimizer.py`
+**Purpose:** Runs the traffic simulation, identifies the worst congested road, and plans a new bypass road using a **hybrid RL + GA** approach.
 
 **Key Functions:**
-1.  **`run_simulation_pipeline()`**:
+1.  **`run_simulation_pipeline()`** (`road-gen.py`):
     *   Generates random traffic trips using SUMO's `randomTrips.py`.
     *   Runs a headless simulation to collect data.
     *   Produces `edge_data.xml` containing congestion metrics.
 
-2.  **`find_worst_congestion()`**:
+2.  **`find_worst_congestion()`** (`road-gen.py`):
     *   **Logic**: Parses `edge_data.xml` and compares the `timeLoss` (seconds lost due to traffic) for every road.
     *   **Output**: Identifies the Edge ID with the maximum time loss (The "Problem").
 
-3.  **`plan_road(start_coord, end_coord)`**:
-    *   **Logic**: Implements the A* Search algorithm.
-    *   **Grid Mapping**: Discretizes the world into a 4x4 meter grid.
-    *   **Obstacle Parsing**: Reads `area.poly.xml` and marks buildings/water as "Blocked" (1) and empty land as "Free" (0).
-    *   **Search**: Finds the shortest path from the start of the congested edge to its end through "Free" cells.
+3.  **`plan_road(edge_id)`** (`road-gen.py`):
+    *   Constructs a cost grid with repulsion fields around the congested edge.
+    *   Marks buildings, water, and existing roads as obstacles or high-cost zones.
+    *   Calls the **hybrid optimizer** to find the optimal bypass.
+
+4.  **`train_rl_agent()`** (`rl_environment.py`):
+    *   **Phase 1** of the hybrid approach.
+    *   Implements Q-Learning on the cost grid.
+    *   Agent navigates from start to goal, learning to avoid obstacles and congestion.
+    *   Produces multiple candidate paths ranked by quality.
+
+5.  **`optimize_routes()`** (`ga_optimizer.py`):
+    *   **Phase 2** of the hybrid approach.
+    *   Uses **DEAP** library for evolutionary optimization.
+    *   Individuals are represented as sequences of waypoints between start and goal.
+    *   RL-discovered paths seed 1/3 of the initial population.
+    *   Evolves routes through selection, crossover, and mutation over multiple generations.
+
+6.  **`find_optimal_bypass()`** (`hybrid_optimizer.py`):
+    *   Orchestrates the two-phase pipeline: RL → GA.
+    *   Returns the best validated path as grid coordinates.
 
 ### Module 3: Traffic Signal Optimization (Genetic Algorithm)
 **Purpose:** Optimizes the green light durations for traffic signals to improve flow at intersections.
@@ -61,48 +78,98 @@ The project consists of three main modules that work sequentially to analyze and
 
 This section details the mathematical "goals" used by the AI agents to make decisions.
 
-### A. Road Generation Cost Function (A* Algorithm)
-Used in `traffic_optimizer.py` to draw the road. The algorithm minimizes the Total Cost $f(n)$.
+### A. RL Reward Function (Q-Learning Agent)
+Used in `rl_environment.py` where the agent learns to navigate the cost grid.
 
-$$ f(n) = g(n) + h(n) $$
+**State:** Current $(x, y)$ position on the discretized grid.
+**Actions:** 8 directional moves (N, S, E, W, NE, NW, SE, SW).
 
-1.  **Road Cost ($g(n)$)**: The actual "price" of building road up to current point.
-    *   **Straight Move**: Cost = 1.0
-    *   **Diagonal Move**: Cost = $\sqrt{2} \approx 1.414$
-    *   *Explanation*: This ensures the road takes the physical shortest path and doesn't zigzag unnecessarily.
+**Reward Components:**
 
-2.  **Heuristic ($h(n)$)**: The estimated remaining distance.
-    *   **Formula**: Euclidean Distance $= \sqrt{(x_{goal} - x_{current})^2 + (y_{goal} - y_{current})^2}$
-    *   *Explanation*: This "pulls" the road search towards the destination, making the search efficient.
+1.  **Step Penalty**: $R_{step} = -\frac{\text{move\_cost} \times \text{cell\_cost}}{10}$
+    *   Move cost = $1.0$ (cardinal) or $\sqrt{2}$ (diagonal)
+    *   Cell cost varies: 1 (empty) → 200 (congestion core)
+    *   *Explanation*: Discourages traversing high-cost zones (congestion, near existing roads).
 
-### B. Signal Optimization Reward Function (Genetic Algorithm)
+2.  **Distance Shaping**: $R_{shape} = 2 \times (d_{old} - d_{new})$
+    *   Euclidean distance improvement toward the goal.
+    *   *Explanation*: Guides the agent toward the destination.
+
+3.  **Goal Reward**: $R_{goal} = +500$ when reaching within 1 cell of the destination.
+
+4.  **Obstacle Penalty**: $R_{obstacle} = -1000$ (episode terminates) for hitting impassable cells.
+
+### B. GA Fitness Function (Route Evolution)
+Used in `ga_optimizer.py` to evaluate how "good" a candidate bypass route is.
+
+$$ \text{Fitness} = C_{traversal} + P_{obstacles} + P_{smoothness} + P_{goal} $$
+
+1.  **Traversal Cost** ($C_{traversal}$): Sum of $\text{move\_cost} \times \text{cell\_cost}$ for each step along the interpolated path.
+    *   *Explanation*: Lower cost means the path avoids congestion and high-cost zones.
+
+2.  **Obstacle Penalty** ($P_{obstacles}$): $10000 \times \text{obstacle\_hits}$
+    *   *Explanation*: Extremely high penalty ensures paths never cross buildings or water.
+
+3.  **Smoothness Penalty** ($P_{smoothness}$): $50 \times (\theta - \frac{\pi}{2})$ for turns sharper than 90°
+    *   *Explanation*: Discourages sharp turns to produce realistic, buildable road geometry.
+
+4.  **Goal Penalty** ($P_{goal}$): $10 \times d_{goal}$ if the path doesn't reach the destination.
+
+**Genetic Operators:**
+*   **Selection**: Tournament (size 3) — picks the fittest from random groups.
+*   **Crossover**: Single-point swap of waypoint subsequences between two parents.
+*   **Mutation**: Gaussian perturbation of waypoint positions.
+*   **Seeding**: 1/3 of the initial population is seeded from RL-discovered routes.
+
+### C. Signal Optimization Reward Function (Genetic Algorithm)
 Used to evaluate how "good" a specific set of traffic signal timings is.
 
-1.  **The Objective**: Minimize the time drivers spend waiting at red lights.
-2.  **Fitness Function**:
-    
-    $$ \text{Fitness} = \frac{1}{\text{Total Average Waiting Time}} $$
+$$ \text{Fitness} = \frac{1}{\text{Total Average Waiting Time}} $$
 
-    *   **Explanation**: 
-        *   The simulation runs with a specific set of green light timings.
-        *   We measure the **Average Waiting Time** (in seconds) for all cars.
-        *   Since we want to *minimize* wait time, but Genetic Algorithms typically *maximize* fitness, we take the inverse.
-        *   **Lower Wait Time** $\rightarrow$ **Higher Fitness** $\rightarrow$ **Higher chance of survival**.
+*   **Explanation**: Lower wait time → Higher fitness → Higher chance of survival.
 
 ---
 
-## 4. Main Functions Summary
+## 4. Hybrid Pipeline Summary
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  1. SUMO Traffic Simulation (randomTrips → edge_data)    │
+├──────────────────────────────────────────────────────────┤
+│  2. Congestion Detection (find worst edge by timeLoss)   │
+├──────────────────────────────────────────────────────────┤
+│  3. Cost Grid Construction                               │
+│     - Buildings/water → OBSTACLE (9999)                  │
+│     - Existing roads  → HIGH COST (60)                   │
+│     - Congestion core → FORBIDDEN (200)                  │
+│     - Congestion near → DRAG (40)                        │
+│     - Empty land      → FREE (1)                         │
+├──────────────────────────────────────────────────────────┤
+│  4. PHASE 1: RL Exploration (Q-Learning)                 │
+│     → Discovers initial feasible routes                  │
+├──────────────────────────────────────────────────────────┤
+│  5. PHASE 2: GA Refinement (DEAP)                        │
+│     → Evolves optimal route from RL seeds                │
+├──────────────────────────────────────────────────────────┤
+│  6. Output: proposal_layer.xml (Red=congested, Green=new)│
+└──────────────────────────────────────────────────────────┘
+```
+
+## 5. Main Functions Summary
 
 | Function | File | Description |
 | :--- | :--- | :--- |
 | `extract_features_from_osm` | `extract_env.py` | Scans OSM data to identify buildings and water for collision checking. |
-| `run_simulation_pipeline` | `traffic_optimizer.py` | Orchestrates the SUMO simulation to generate traffic data. |
-| `find_worst_congestion` | `traffic_optimizer.py` | Analytic function that pinpoints the road segment with the highest delay. |
-| `plan_road` | `traffic_optimizer.py` | The "Brain" of road generation; uses A* to generate the geometry of the new bypass. |
+| `run_simulation_pipeline` | `road-gen.py` | Orchestrates the SUMO simulation to generate traffic data. |
+| `find_worst_congestion` | `road-gen.py` | Analytic function that pinpoints the road segment with the highest delay. |
+| `plan_road` | `road-gen.py` | Constructs cost grid and calls the hybrid optimizer. |
+| `train_rl_agent` | `rl_environment.py` | Q-Learning agent explores the grid to discover bypass routes. |
+| `optimize_routes` | `ga_optimizer.py` | Genetic Algorithm evolves route population for optimal fitness. |
+| `find_optimal_bypass` | `hybrid_optimizer.py` | Orchestrates the RL → GA two-phase pipeline. |
 
 ---
 
-## 5. Visual Demonstration
+## 6. Visual Demonstration
 
 To verify the results of the project, use the following command to visualize the generated road in SUMO GUI:
 
@@ -111,4 +178,4 @@ sumo-gui -n area.net.xml -a area.poly.xml,proposal_layer.xml
 ```
 
 *   **Red Road**: The detected congested segment.
-*   **Green Road**: The A* generated bypass avoiding buildings.
+*   **Green Road**: The RL+GA generated bypass avoiding buildings and congestion.

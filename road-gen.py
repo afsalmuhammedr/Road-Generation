@@ -4,10 +4,10 @@ import subprocess
 import xml.etree.ElementTree as ET
 import sumolib
 import numpy as np
-import heapq
 import math
 import json
 from shapely.geometry import Polygon, Point, LineString
+from hybrid_optimizer import find_optimal_bypass
 
 # --- Configuration ---
 NET_FILE = "area.net.xml"
@@ -34,6 +34,13 @@ COST_CONGESTION_CORE = int(_config.get("COST_CONGESTION_CORE", 200)) # The red z
 COST_CONGESTION_NEAR = int(_config.get("COST_CONGESTION_NEAR", 40))  # Close to red zone (high drag)
 COST_CONGESTION_FAR = int(_config.get("COST_CONGESTION_FAR", 5))    # Influence zone (slight drag)
 COST_EMPTY = int(_config.get("COST_EMPTY", 1))          # Green field (cheapest)
+
+# HYBRID RL + GA CONFIGURATION
+RL_EPISODES = int(_config.get("RL_EPISODES", 1500))
+RL_DOWNSAMPLE = int(_config.get("RL_DOWNSAMPLE", 3))
+GA_POPULATION = int(_config.get("GA_POPULATION", 80))
+GA_GENERATIONS = int(_config.get("GA_GENERATIONS", 100))
+GA_WAYPOINTS = int(_config.get("GA_WAYPOINTS", 10))
 
 
 def check_sumo_env():
@@ -77,16 +84,7 @@ def find_worst_congestion():
         print(f"   >> CRITICAL BOTTLENECK: Edge {worst_edge} (Lag: {max_time_loss:.2f}s)")
     return worst_edge
 
-# --- ADVANCED PATHFINDING ---
-
-class Node:
-    def __init__(self, x, y, parent=None, g=0, h=0):
-        self.x, self.y = x, y
-        self.parent = parent
-        self.g = g
-        self.h = h
-        self.f = g + h
-    def __lt__(self, other): return self.f < other.f
+# --- HYBRID RL + GA PATHFINDING ---
 
 def get_valid_node(grid, x, y, w, h):
     """Finds nearest non-obstacle node."""
@@ -208,58 +206,28 @@ def plan_road(edge_id):
         print("Error: Could not find valid start/end points.")
         return
 
-    # 6. A* Search
-    print(f"   Searching for path...")
-    open_list = []
-    closed_set = set()
-    # Heuristic weight 1.5 encourages taking "shortcuts" through low-cost areas (swinging wide)
-    # rather than fighting through high-cost areas.
-    heapq.heappush(open_list, Node(start_pt[0], start_pt[1], h=0)) 
+    # 6. Hybrid RL + GA Search
+    print(f"   Running Hybrid RL + GA Optimizer...")
     
-    final_node = None
-    visited_count = 0
-    
-    while open_list:
-        curr = heapq.heappop(open_list)
-        visited_count += 1
-        
-        if abs(curr.x - end_pt[0]) <= 1 and abs(curr.y - end_pt[1]) <= 1:
-            final_node = curr
-            break
-        
-        if (curr.x, curr.y) in closed_set: continue
-        closed_set.add((curr.x, curr.y))
-        
-        for dx, dy in [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]:
-            nx, ny = curr.x+dx, curr.y+dy
-            
-            if 0 <= nx < grid_w and 0 <= ny < grid_h:
-                cell_cost = grid[nx][ny]
-                if cell_cost >= COST_OBSTACLE: continue
-                if (nx, ny) in closed_set: continue
-                
-                move_cost = 1.414 if dx!=0 and dy!=0 else 1.0
-                # Cost function: Distance * Cell Weight
-                new_g = curr.g + (move_cost * cell_cost)
-                
-                # Heuristic: Euclidean * 1.5
-                h = math.sqrt((nx-end_pt[0])**2 + (ny-end_pt[1])**2) * 1.5
-                
-                heapq.heappush(open_list, Node(nx, ny, curr, new_g, h))
+    optimal_path = find_optimal_bypass(
+        grid, start_pt, end_pt,
+        obstacle_threshold=COST_OBSTACLE,
+        rl_episodes=RL_EPISODES,
+        rl_downsample=RL_DOWNSAMPLE,
+        ga_population=GA_POPULATION,
+        ga_generations=GA_GENERATIONS,
+        ga_waypoints=GA_WAYPOINTS
+    )
 
-    if final_node:
-        print(f"   SUCCESS: Bypass found! Nodes visited: {visited_count}")
+    if optimal_path:
+        print(f"   SUCCESS: Bypass found! Path points: {len(optimal_path)}")
         path_str = []
-        c = final_node
-        step = 0
-        while c:
+        for i, (gx, gy) in enumerate(optimal_path):
             # Sub-sample points to smooth the line slightly
-            if step % 2 == 0:
-                wx = min_x + c.x*GRID_RES
-                wy = min_y + c.y*GRID_RES
+            if i % 2 == 0:
+                wx = min_x + gx * GRID_RES
+                wy = min_y + gy * GRID_RES
                 path_str.append(f"{wx:.2f},{wy:.2f}")
-            c = c.parent
-            step += 1
         
         # Save Output
         with open(OUTPUT_PROPOSAL, 'w') as f:
