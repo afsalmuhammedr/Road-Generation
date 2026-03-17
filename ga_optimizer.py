@@ -85,20 +85,7 @@ def _grid_walk(grid, start, end, obstacle_threshold, max_iters=5000):
                 best_next = (nx, ny)
 
         if best_next is None:
-            # Stuck — allow revisiting with higher penalty
-            for dx, dy in _DIRS:
-                nx, ny = x + dx, y + dy
-                if not (0 <= nx < gw and 0 <= ny < gh):
-                    continue
-                if grid[nx][ny] >= obstacle_threshold:
-                    continue
-                dist = math.sqrt((nx - ex)**2 + (ny - ey)**2)
-                if dist < best_score:
-                    best_score = dist
-                    best_next = (nx, ny)
-
-        if best_next is None:
-            break  # Truly stuck
+            break  # Truly stuck, do not revisit previous cells to prevent infinite loops
 
         x, y = best_next
         visited.add((x, y))
@@ -198,10 +185,14 @@ def evaluate_route(individual, grid, start, goal, obstacle_threshold):
                 obstacle_hits += 1
             else:
                 dx, dy = abs(x - px), abs(y - py)
-                move = 1.414 if dx > 0 and dy > 0 else 1.0
-                traversal_cost += move * cell_cost
+                # Penalize "teleports" heavily if path breaks
+                if dx > 1 or dy > 1:
+                    traversal_cost += 50000 * (dx + dy)
+                else:
+                    move = 1.414 if dx > 0 and dy > 0 else 1.0
+                    traversal_cost += move * cell_cost
         else:
-            traversal_cost += 500
+            traversal_cost += 50000
 
     # 2. Obstacle penalty
     obstacle_penalty = obstacle_hits * 50000

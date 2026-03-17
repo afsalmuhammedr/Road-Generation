@@ -265,7 +265,7 @@ def train_rl_agent(grid, start, goal, obstacle_threshold=9999,
         if (episode + 1) % 200 == 0:
             elapsed = time.time() - start_time
             print(f"        Episode {episode+1:>5d}/{n_episodes} | "
-                  f"ε={agent.epsilon:.3f} | "
+                  f"eps={agent.epsilon:.3f} | "
                   f"Goals: {goals_reached} | "
                   f"Q-states: {len(agent.q_table)} | "
                   f"Time: {elapsed:.1f}s")

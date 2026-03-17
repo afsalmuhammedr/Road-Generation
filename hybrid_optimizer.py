@@ -3,25 +3,26 @@ Hybrid RL + GA Optimizer for Road Bypass Planning (v2)
 =======================================================
 Two-phase approach:
   Phase 1 — RL Exploration: Q-Learning on downsampled grid discovers feasible routes
-  Phase 2 — GA Refinement: Evolves routes using cost-grid-aware interpolation
+  Phase 2 — GA Refinement: Evolves routes on a moderately downsampled grid
 
 Called by road-gen.py to replace A* pathfinding.
 """
 
 import time
-from rl_environment import train_rl_agent
+import numpy as np
+from rl_environment import train_rl_agent, downsample_grid, upsample_path
 from ga_optimizer import optimize_routes
 
 
 def find_optimal_bypass(grid, start, goal, obstacle_threshold=9999,
                         rl_episodes=1500, rl_downsample=3,
-                        ga_population=80, ga_generations=100,
-                        ga_waypoints=10):
+                        ga_population=50, ga_generations=60,
+                        ga_waypoints=10, ga_downsample=2):
     """
     Execute the hybrid RL + GA pipeline to find the optimal bypass route.
 
-    Phase 1: Train RL agent on downsampled grid to discover initial paths.
-    Phase 2: Seed GA with RL paths and evolve on full-resolution grid.
+    Phase 1: Train RL agent on heavily downsampled grid to discover initial paths.
+    Phase 2: Seed GA with RL paths and evolve on moderately downsampled grid.
 
     Args:
         grid: 2D numpy array (grid_w x grid_h) of cell costs.
@@ -33,6 +34,7 @@ def find_optimal_bypass(grid, start, goal, obstacle_threshold=9999,
         ga_population: GA population size.
         ga_generations: GA generations.
         ga_waypoints: Intermediate waypoints per route.
+        ga_downsample: Grid downsampling factor for GA (2 = 4x fewer cells).
 
     Returns:
         path: List of (x, y) grid coordinates, or None if no path found.
@@ -63,15 +65,45 @@ def find_optimal_bypass(grid, start, goal, obstacle_threshold=9999,
         print("   [Phase 1] WARNING: No RL routes found — GA will explore from scratch")
 
     # ------------------------------------------------------------------
-    # PHASE 2: Genetic Algorithm Refinement
+    # PHASE 2: Genetic Algorithm Refinement (on downsampled grid)
     # ------------------------------------------------------------------
     print(f"\n   [Phase 2] GA Refinement ({ga_generations} generations, "
           f"pop {ga_population})...")
 
+    # Downsample grid for GA to run much faster
+    if ga_downsample > 1:
+        ga_grid = downsample_grid(grid, ga_downsample)
+        ga_start = (start[0] // ga_downsample, start[1] // ga_downsample)
+        ga_goal = (goal[0] // ga_downsample, goal[1] // ga_downsample)
+
+        gw, gh = ga_grid.shape
+        ga_start = (max(0, min(gw - 1, ga_start[0])),
+                    max(0, min(gh - 1, ga_start[1])))
+        ga_goal = (max(0, min(gw - 1, ga_goal[0])),
+                   max(0, min(gh - 1, ga_goal[1])))
+
+        # Also downsample RL seed paths to match GA grid
+        ga_seed_paths = None
+        if rl_paths:
+            ga_seed_paths = []
+            for path in rl_paths:
+                ds_path = [(x // ga_downsample, y // ga_downsample) for x, y in path]
+                # Clamp
+                ds_path = [(max(0, min(gw - 1, x)), max(0, min(gh - 1, y)))
+                           for x, y in ds_path]
+                ga_seed_paths.append(ds_path)
+
+        print(f"   GA grid: {ga_grid.shape} (downsampled {ga_downsample}x from {grid.shape})")
+    else:
+        ga_grid = grid
+        ga_start = start
+        ga_goal = goal
+        ga_seed_paths = rl_paths if rl_paths else None
+
     best_path, best_fitness = optimize_routes(
-        grid, start, goal,
+        ga_grid, ga_start, ga_goal,
         obstacle_threshold=obstacle_threshold,
-        seed_paths=rl_paths if rl_paths else None,
+        seed_paths=ga_seed_paths,
         population_size=ga_population,
         n_generations=ga_generations,
         n_waypoints=ga_waypoints,
@@ -80,15 +112,20 @@ def find_optimal_bypass(grid, start, goal, obstacle_threshold=9999,
     )
 
     # ------------------------------------------------------------------
-    # Validate & clean result
+    # Upsample GA result back to original grid and validate
     # ------------------------------------------------------------------
     if best_path and len(best_path) >= 2:
+        # Upsample if we downsampled
+        if ga_downsample > 1:
+            best_path = upsample_path(best_path, ga_downsample)
+
         # Remove any remaining obstacle cells
         gw, gh = grid.shape
         valid_path = []
         for x, y in best_path:
-            if (0 <= x < gw and 0 <= y < gh
-                    and grid[x][y] < obstacle_threshold):
+            x = max(0, min(gw - 1, x))
+            y = max(0, min(gh - 1, y))
+            if grid[x][y] < obstacle_threshold:
                 valid_path.append((x, y))
 
         if len(valid_path) >= 2:
