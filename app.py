@@ -6,7 +6,7 @@ import threading
 import uuid
 import time
 import io
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 import subprocess
 import xml.etree.ElementTree as ET
@@ -520,6 +520,45 @@ def get_project_areas(project_id):
             })
 
     return jsonify({"areas": areas})
+
+
+@app.route('/api/projects/<project_id>/areas/<area_id>/results', methods=['GET'])
+def get_area_results(project_id, area_id):
+    """Get past results and files for a specific area."""
+    try:
+        project_path = os.path.join(PROJECTS_DIR, project_id)
+        area_path = os.path.join(project_path, area_id)
+        
+        if not os.path.exists(area_path):
+            return jsonify({"error": "Area not found or not processed yet"}), 404
+            
+        files = []
+        for f in os.listdir(area_path):
+            fpath = os.path.join(area_path, f)
+            if os.path.isfile(fpath):
+                files.append({
+                    "name": f,
+                    "size": os.path.getsize(fpath)
+                })
+
+        overlays = parse_proposal_xml(area_path, "api_request")
+        
+        return jsonify({
+            "files": files,
+            "overlays": overlays
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/projects/<project_id>/areas/<area_id>/files/<path:filename>', methods=['GET'])
+def download_file(project_id, area_id, filename):
+    project_path = os.path.join(PROJECTS_DIR, project_id)
+    area_path = os.path.join(project_path, area_id)
+    if not os.path.exists(area_path):
+        return jsonify({"error": "Area not found"}), 404
+    return send_from_directory(area_path, filename, as_attachment=True)
 
 
 if __name__ == '__main__':
